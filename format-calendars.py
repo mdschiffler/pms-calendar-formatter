@@ -17,6 +17,19 @@ PASSWORD = "password"
 SOURCE_ICAL_URL = 'https://www.freetobook.com/ical/property-feed/5eac437529a87f16b68149bb183f19ef.ics'
 TIMEZONE = 'America/Puerto_Rico'
 
+# Ensure calendars are always available for these units, even when no reservations exist.
+KNOWN_PROPERTIES = [
+    "Room ONE",
+    "Room TWO",
+    "Room THREE",
+    "Room FOUR",
+    "Room FIVE",
+    "Apartment AYA",
+    "Apartment RYO",
+    "Apartment UMI",
+    "Apartment MAO - Five Bedroom",
+]
+
 app = Flask(__name__)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
@@ -244,7 +257,7 @@ def parse_and_group_events(now_override=None, cache_file=CACHE_FILE):
     )
 
     # Ensure all known property keys are present, even if empty
-    for key in ["Room ONE", "Room TWO", "Room FOUR"]:
+    for key in KNOWN_PROPERTIES:
         if key not in properties:
             properties[key] = []
 

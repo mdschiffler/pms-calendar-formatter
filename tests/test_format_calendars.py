@@ -11,6 +11,8 @@ MODULE_PATH = Path(__file__).resolve().parent.parent / "format-calendars.py"
 
 def load_module():
     spec = importlib.util.spec_from_file_location("format_calendars", MODULE_PATH)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load module from {MODULE_PATH}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -298,7 +300,8 @@ def test_parses_sample_feed_and_groups_by_property(monkeypatch, tmp_path):
     }
 
     # Last update event is ignored and default keys still exist.
-    assert "Room FOUR" in props, "Default placeholder Room FOUR key should exist even if empty"
+    for key in module.KNOWN_PROPERTIES:
+        assert key in props, f"Default placeholder {key} key should exist even if empty"
 
     for prop, count in expected_counts.items():
         assert prop in props, f"{prop} should be present"
@@ -310,3 +313,19 @@ def test_parses_sample_feed_and_groups_by_property(monkeypatch, tmp_path):
     assert umi_event["start"].hour == 16 and umi_event["end"].hour == 11, "DATE values should use 16:00 check-in and 11:00 checkout times"
     assert umi_event["start"].date().isoformat() == "2025-12-03"
     assert umi_event["end"].date().isoformat() == "2025-12-07"
+
+
+def test_generates_empty_calendars_for_known_properties(monkeypatch, tmp_path):
+    module = load_module()
+    tz = pytz.timezone(module.TIMEZONE)
+    now = tz.localize(datetime(2025, 1, 1, 12, 0, 0))
+
+    cache_file = tmp_path / "cache.json"
+    empty_feed = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//test//EN\nEND:VCALENDAR"
+    monkeypatch.setattr(module.requests, "get", lambda url: DummyResponse(empty_feed))
+
+    props = module.parse_and_group_events(now_override=now, cache_file=str(cache_file))
+
+    for key in module.KNOWN_PROPERTIES:
+        assert key in props, f"{key} should always have a generated calendar"
+        assert props[key] == [], f"{key} should be empty when the source feed has no reservations"
