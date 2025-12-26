@@ -30,6 +30,31 @@ KNOWN_PROPERTIES = [
     "Apartment MAO - Five Bedroom",
 ]
 
+SECTION_ORDER = [
+    ("Apartments", [
+        "Apartment RYO",
+        "Apartment UMI",
+        "Apartment AYA",
+        "Apartment MAO - Five Bedroom",
+    ]),
+    ("Rooms", [
+        "Room ONE",
+        "Room TWO",
+        "Room THREE",
+        "Room FOUR",
+        "Room FIVE",
+    ]),
+]
+
+DISPLAY_NAME_OVERRIDES = {
+    "Room ONE": "Room #1",
+    "Room TWO": "Room #2",
+    "Room THREE": "Room #3",
+    "Room FOUR": "Room #4",
+    "Room FIVE": "Room #5",
+    "Apartment MAO - Five Bedroom": "Apartment MAO",
+}
+
 app = Flask(__name__)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
@@ -451,27 +476,34 @@ def list_properties():
     </script>
 </head>
 <body>
+    <h1>PMS Calendar Formatter</h1>
+    <p>
+        Generates per-unit iCal feeds from a single PMS source feed. Created to translate a single iCal exported from Freetobook to per-unit feeds compatible with Hospitable. View the source on
+        <a href="https://github.com/mdschiffler/pms-calendar-formatter" target="_blank" rel="noopener">GitHub</a>.
+    </p>
+    <br>
     <h2>MARU - Available Calendars</h2>
-    <ul>
 """
-    def sort_apartments_first(s):
-        s_lower = s.lower()
-        prefix_priority = 0 if s_lower.startswith("apartment") else (1 if s_lower.startswith("room") else 2)
-        return (prefix_priority, s_lower)
-
-    for i, prop in enumerate(sorted(props.keys(), key=sort_apartments_first)):
-        url_friendly_name = slugify(prop)
-        calendar_url = f"{base_url}/calendar/{url_friendly_name}.ics"
-        html += f'''
-    <li>
-        <a href="{calendar_url}">{prop}.ics</a><br>
-        <code id="url{i}">{calendar_url}</code>
-        <button onclick="copyToClipboard('url{i}')">Copy</button>
-    </li>
-    '''
+    link_index = 0
+    for section_title, ordered_props in SECTION_ORDER:
+        html += f"    <h3>{section_title}:</h3>\n    <ul>\n"
+        for prop in ordered_props:
+            if prop not in props:
+                continue
+            url_friendly_name = slugify(prop)
+            calendar_url = f"{base_url}/calendar/{url_friendly_name}.ics"
+            display_name = DISPLAY_NAME_OVERRIDES.get(prop, prop)
+            html += f'''
+        <li>
+            <a href="{calendar_url}">{display_name}.ics</a><br>
+            <code id="url{link_index}">{calendar_url}</code>
+            <button onclick="copyToClipboard('url{link_index}')">Copy</button>
+        </li>
+        '''
+            link_index += 1
+        html += "    </ul>\n"
 
     html += f"""
-    </ul>
     <div id="toast" class="toast">Copied to clipboard</div>
     <footer style="position: fixed; bottom: 10px; width: 100%; text-align: center; font-size: 0.9em;">
         Last updated: {datetime.now(pytz.timezone(TIMEZONE)).strftime('%Y-%m-%d %H:%M:%S %Z')} – © {datetime.now().year} Optihome Services LLC. All rights reserved.
