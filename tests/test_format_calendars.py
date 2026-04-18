@@ -356,6 +356,9 @@ def test_parses_sample_feed_and_groups_by_property(monkeypatch, tmp_path):
     assert umi_event["start"].hour == 16 and umi_event["end"].hour == 11, "DATE values should use 16:00 check-in and 11:00 checkout times"
     assert umi_event["start"].date().isoformat() == "2025-12-03"
     assert umi_event["end"].date().isoformat() == "2025-12-07"
+    assert umi_event["booking_code"] == "WTB192755B", "Unique booking codes should not be suffixed"
+    assert umi_event["original_booking_code"] == "WTB192755B"
+    assert umi_event["summary"] == "Apartment UMI (WTB192755B)"
 
 
 def test_generates_empty_calendars_for_known_properties(monkeypatch, tmp_path):
@@ -385,17 +388,26 @@ def test_same_booking_code_across_units_is_not_deduped(monkeypatch, tmp_path):
     props = module.parse_and_group_events(now_override=now, cache_file=str(cache_file))
 
     expected = {
-        "Apartment MAO - Five Bedroom": "74699666@freetobook.com",
-        "Apartment AYA": "74699663@freetobook.com",
-        "Apartment RYO": "74699664@freetobook.com",
-        "Apartment UMI": "74699665@freetobook.com",
+        "Apartment MAO - Five Bedroom": ("74699666@freetobook.com", "WTB19BCD37-1"),
+        "Apartment AYA": ("74699663@freetobook.com", "WTB19BCD37-2"),
+        "Apartment RYO": ("74699664@freetobook.com", "WTB19BCD37-3"),
+        "Apartment UMI": ("74699665@freetobook.com", "WTB19BCD37-4"),
     }
-    for prop, uid in expected.items():
+    for prop, (uid, booking_code) in expected.items():
         matching_events = [event for event in props[prop] if "WTB19BCD37" in event["summary"]]
         assert len(matching_events) == 1, f"{prop} should keep its own WTB19BCD37 reservation"
         assert matching_events[0]["uid"] == uid
+        assert matching_events[0]["booking_code"] == booking_code
+        assert matching_events[0]["original_booking_code"] == "WTB19BCD37"
+        assert matching_events[0]["summary"] == f"{prop} ({booking_code})"
+        assert f"Reservation Code: {booking_code}" in matching_events[0]["description"]
+        assert "Original Reservation Code: WTB19BCD37" in matching_events[0]["description"]
         assert matching_events[0]["start"].date().isoformat() == "2026-05-07"
         assert matching_events[0]["end"].date().isoformat() == "2026-05-11"
+
+    cached = json.loads(cache_file.read_text())
+    assert cached["Apartment MAO - Five Bedroom"][0]["booking_code"] == "WTB19BCD37-1"
+    assert cached["Apartment MAO - Five Bedroom"][0]["original_booking_code"] == "WTB19BCD37"
 
 
 def test_routes_export_same_booking_code_with_unit_scoped_uids(monkeypatch, tmp_path):
@@ -409,14 +421,14 @@ def test_routes_export_same_booking_code_with_unit_scoped_uids(monkeypatch, tmp_
     monkeypatch.setattr(module, "parse_and_group_events", lambda: props)
 
     expected = {
-        "apartment-mao-five-bedroom": ("Apartment MAO - Five Bedroom (WTB19BCD37)", "74699666@freetobook.com", "MAO"),
-        "apartment-aya": ("Apartment AYA (WTB19BCD37)", "74699663@freetobook.com", "AYA"),
-        "apartment-ryo": ("Apartment RYO (WTB19BCD37)", "74699664@freetobook.com", "RYO"),
-        "apartment-umi": ("Apartment UMI (WTB19BCD37)", "74699665@freetobook.com", "UMI"),
+        "apartment-mao-five-bedroom": ("Apartment MAO - Five Bedroom (WTB19BCD37-1)", "74699666@freetobook.com", "MAO", "WTB19BCD37-1"),
+        "apartment-aya": ("Apartment AYA (WTB19BCD37-2)", "74699663@freetobook.com", "AYA", "WTB19BCD37-2"),
+        "apartment-ryo": ("Apartment RYO (WTB19BCD37-3)", "74699664@freetobook.com", "RYO", "WTB19BCD37-3"),
+        "apartment-umi": ("Apartment UMI (WTB19BCD37-4)", "74699665@freetobook.com", "UMI", "WTB19BCD37-4"),
     }
 
     with module.app.test_client() as client:
-        for slug, (summary, source_uid, unit_code) in expected.items():
+        for slug, (summary, source_uid, unit_code, booking_code) in expected.items():
             response = client.get(f"/calendar/{slug}.ics")
             assert response.status_code == 200
 
@@ -427,10 +439,14 @@ def test_routes_export_same_booking_code_with_unit_scoped_uids(monkeypatch, tmp_
             assert str(event.get("UID")) == f"{source_uid.split('@', 1)[0]}+{unit_code}@staypr"
             assert str(event.get("X-ORIGINAL-UID")) == source_uid
             assert str(event.get("X-UNIT-CODE")) == unit_code
+            assert str(event.get("X-RESERVATION-CODE")) == booking_code
+            assert str(event.get("X-ORIGINAL-RESERVATION-CODE")) == "WTB19BCD37"
             assert str(event.get("STATUS")) == "CONFIRMED"
             assert str(event.get("TRANSP")) == "OPAQUE"
             assert event.get("LAST-MODIFIED") is not None
             assert int(event.get("SEQUENCE")) == 1
+            assert f"Reservation Code: {booking_code}" in str(event.get("DESCRIPTION"))
+            assert "Original Reservation Code: WTB19BCD37" in str(event.get("DESCRIPTION"))
 
 
 def test_fetch_failure_uses_cache_without_overwriting_it(monkeypatch, tmp_path):

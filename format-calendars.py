@@ -91,6 +91,45 @@ def save_cached_reservations(data, cache_file=CACHE_FILE):
     with open(cache_file, "w") as f:
         json.dump(data, f, indent=2, default=str)
 
+def build_event_description(
+    full_property_name,
+    booking_code,
+    original_booking_code,
+    uid,
+    nights,
+    start,
+    end,
+    dtstart_utc,
+    dtend_utc,
+    location_raw=None,
+    description_raw=None,
+    categories_raw=None,
+):
+    desc_lines = [
+        f"Name/Unit: {full_property_name}",
+        f"Reservation Code: {booking_code}",
+    ]
+    if original_booking_code != booking_code:
+        desc_lines.append(f"Original Reservation Code: {original_booking_code}")
+    desc_lines.extend([
+        f"Property: {full_property_name}",
+        f"UID: {uid}",
+        f"Nights: {nights}",
+        f"Start: {start.isoformat()} ({dtstart_utc.isoformat()} UTC)",
+        f"End: {end.isoformat()} ({dtend_utc.isoformat()} UTC)",
+    ])
+
+    if location_raw:
+        desc_lines.append(f"Location: {location_raw}")
+
+    if description_raw:
+        desc_lines.append(f"Source Description: {description_raw}")
+
+    if categories_raw:
+        desc_lines.append(f"Categories: {categories_raw}")
+
+    return "\n".join(str(x) for x in desc_lines)
+
 def ensure_known_property_keys(properties):
     for key in KNOWN_PROPERTIES:
         if key not in properties:
@@ -121,6 +160,8 @@ def properties_from_cache(cache, now):
                 'uid': ev.get('uid'),
                 'summary': ev.get('summary'),
                 'description': ev.get('description'),
+                'booking_code': ev.get('booking_code'),
+                'original_booking_code': ev.get('original_booking_code'),
                 'start': cached_start,
                 'end': cached_end,
                 'location': ev.get('location'),
@@ -160,6 +201,7 @@ def parse_and_group_events(now_override=None, cache_file=CACHE_FILE):
 
     seen_uids_by_prop = defaultdict(set)
     source_events_by_uid = {}
+    source_reservations = []
 
     for component in cal.walk():
         if component.name != "VEVENT":
@@ -221,9 +263,7 @@ def parse_and_group_events(now_override=None, cache_file=CACHE_FILE):
         else:
             src_dtstamp = datetime.now(pytz.utc)
 
-        # Build a normalized event dict for export
         nights = (dtend.date() - dtstart.date()).days
-        summary_text = f"{full_property_name} ({booking_code})"
 
         # Ensure dtstart and dtend are timezone-aware in PR
         start = dtstart if dtstart.tzinfo else puerto_rico_tz.localize(dtstart)
@@ -232,43 +272,76 @@ def parse_and_group_events(now_override=None, cache_file=CACHE_FILE):
         dtstart_utc = start.astimezone(pytz.utc)
         dtend_utc = end.astimezone(pytz.utc)
 
-        desc_lines = [
-            f"Name/Unit: {full_property_name}",
-            f"Reservation Code: {booking_code}",
-            f"Property: {full_property_name}",
-            f"UID: {uid}",
-            f"Nights: {nights}",
-            f"Start: {start.isoformat()} ({dtstart_utc.isoformat()} UTC)",
-            f"End: {end.isoformat()} ({dtend_utc.isoformat()} UTC)",
-        ]
-
         location_raw = component.get('LOCATION')
-        if location_raw:
-            desc_lines.append(f"Location: {location_raw}")
-
         description_raw = component.get('DESCRIPTION')
-        if description_raw:
-            desc_lines.append(f"Source Description: {description_raw}")
-
         categories_raw = component.get('CATEGORIES')
-        if categories_raw:
-            desc_lines.append(f"Categories: {categories_raw}")
 
-        properties[key].append({
+        source_reservations.append({
             'uid': uid,
-            'summary': summary_text,
-            'description': "\n".join(str(x) for x in desc_lines),
+            'property_name': key,
+            'booking_code': booking_code,
+            'nights': nights,
             'start': start,
             'end': end,
+            'dtstart_utc': dtstart_utc,
+            'dtend_utc': dtend_utc,
             'location': str(location_raw) if location_raw else None,
+            'location_raw': location_raw,
+            'description_raw': description_raw,
+            'categories_raw': categories_raw,
             'geo': None,
             'dtstamp': src_dtstamp.isoformat(),
             'version': 1,
             'last_seen': now.isoformat(),
         })
 
-        seen_uids_by_prop[key].add(uid)
-        source_events_by_uid[(key, uid)] = properties[key][-1]
+    booking_code_counts = defaultdict(int)
+    for reservation in source_reservations:
+        booking_code_counts[reservation['booking_code']] += 1
+
+    booking_code_seen = defaultdict(int)
+    for reservation in source_reservations:
+        key = reservation['property_name']
+        original_booking_code = reservation['booking_code']
+        booking_code_seen[original_booking_code] += 1
+        if booking_code_counts[original_booking_code] > 1:
+            booking_code = f"{original_booking_code}-{booking_code_seen[original_booking_code]}"
+        else:
+            booking_code = original_booking_code
+
+        summary_text = f"{key} ({booking_code})"
+        description = build_event_description(
+            key,
+            booking_code,
+            original_booking_code,
+            reservation['uid'],
+            reservation['nights'],
+            reservation['start'],
+            reservation['end'],
+            reservation['dtstart_utc'],
+            reservation['dtend_utc'],
+            reservation.get('location_raw'),
+            reservation.get('description_raw'),
+            reservation.get('categories_raw'),
+        )
+
+        properties[key].append({
+            'uid': reservation['uid'],
+            'summary': summary_text,
+            'description': description,
+            'booking_code': booking_code,
+            'original_booking_code': original_booking_code,
+            'start': reservation['start'],
+            'end': reservation['end'],
+            'location': reservation.get('location'),
+            'geo': reservation.get('geo'),
+            'dtstamp': reservation.get('dtstamp'),
+            'version': reservation.get('version', 1),
+            'last_seen': reservation.get('last_seen', now.isoformat()),
+        })
+
+        seen_uids_by_prop[key].add(reservation['uid'])
+        source_events_by_uid[(key, reservation['uid'])] = properties[key][-1]
 
     merged_count = 0
     restored_active_after_start = 0
@@ -318,6 +391,8 @@ def parse_and_group_events(now_override=None, cache_file=CACHE_FILE):
                         'uid': cached_uid,
                         'summary': ev.get('summary'),
                         'description': ev.get('description'),
+                        'booking_code': ev.get('booking_code'),
+                        'original_booking_code': ev.get('original_booking_code'),
                         'start': cached_start,
                         'end': cached_end,
                         'location': ev.get('location'),
@@ -350,6 +425,8 @@ def parse_and_group_events(now_override=None, cache_file=CACHE_FILE):
                 cache_evs.append({
                     'uid': e['uid'],
                     'summary': e.get('summary'),
+                    'booking_code': e.get('booking_code'),
+                    'original_booking_code': e.get('original_booking_code'),
                     'start': e['start'].isoformat(),
                     'end': e['end'].isoformat(),
                     'description': e.get('description'),
@@ -407,6 +484,10 @@ def export_property_calendar(property_name):
         # Expose original identifiers for debugging/traceability
         e.add('X-ORIGINAL-UID', src_uid)
         e.add('X-UNIT-CODE', unit_code)
+        if ev.get('booking_code'):
+            e.add('X-RESERVATION-CODE', ev.get('booking_code'))
+        if ev.get('original_booking_code'):
+            e.add('X-ORIGINAL-RESERVATION-CODE', ev.get('original_booking_code'))
 
         ev_dtstamp = None
         try:

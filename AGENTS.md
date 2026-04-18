@@ -12,6 +12,8 @@ This service converts one Freetobook property iCal feed into one downstream iCal
 
 Do not dedupe reservations by booker, booking code, date span, or overlapping dates. A booking that appears in several units with the same booking code and dates must produce one event in each unit's output calendar.
 
+If the same reservation code appears more than once in the active parsed source feed, suffix the downstream reservation code in source-feed order. For example, four `WTB19BCD37` events become `WTB19BCD37-1`, `WTB19BCD37-2`, `WTB19BCD37-3`, and `WTB19BCD37-4`. Keep the original source code in `original_booking_code` and expose both values in exported traceability fields.
+
 All-day source dates are converted to Puerto Rico local stay times: `DTSTART` at 16:00 and `DTEND` at 11:00. Datetime values without a timezone are localized to `America/Puerto_Rico`. Past events whose end is before the local start of today are ignored.
 
 ## Cache Semantics
@@ -27,7 +29,7 @@ The cache exists to protect active stays when the source feed drops them:
 ## Export Semantics
 Calendar slugs come from `slugify()`, which lowercases a unit name and replaces non-alphanumeric runs with hyphens. Known units in `KNOWN_PROPERTIES` always get calendars, even when empty.
 
-Exported event UIDs combine the source UID left side with a unit code, for example `74699663+AYA@staypr`. This keeps same-booker, same-date multi-unit bookings distinct for downstream consumers. Each event also includes `X-ORIGINAL-UID` and `X-UNIT-CODE` for traceability.
+Exported event UIDs combine the source UID left side with a unit code, for example `74699663+AYA@staypr`. This keeps same-booker, same-date multi-unit bookings distinct for downstream consumers. Each event also includes `X-ORIGINAL-UID`, `X-UNIT-CODE`, `X-RESERVATION-CODE`, and `X-ORIGINAL-RESERVATION-CODE` for traceability.
 
 Per-unit exports include downstream-friendly fields: `STATUS:CONFIRMED`, `TRANSP:OPAQUE`, `LAST-MODIFIED` from the source or cached `DTSTAMP`, and `SEQUENCE` from the cached version.
 
