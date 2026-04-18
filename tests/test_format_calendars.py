@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from icalendar import Calendar as ICal
 import pytz
 
 
@@ -19,8 +20,9 @@ def load_module():
 
 
 class DummyResponse:
-    def __init__(self, text: str):
+    def __init__(self, text: str, status_code: int = 200):
         self.text = text
+        self.status_code = status_code
 
 
 ICS_SAMPLE = """BEGIN:VCALENDAR
@@ -227,6 +229,47 @@ END:VCALENDAR
 """
 
 
+MULTI_UNIT_BOOKING_SAMPLE = """BEGIN:VCALENDAR
+VERSION:2.0
+CALSCALE:GREGORIAN
+PRODID:-//freetobook//EN
+BEGIN:VEVENT
+UID:74699666@freetobook.com
+DTSTAMP:20260417T182517Z
+SUMMARY:Apartment MAO - Five Bedroom:WTB19BCD37
+DTSTART;VALUE=DATE:20260507
+DTEND;VALUE=DATE:20260511
+END:VEVENT
+BEGIN:VEVENT
+UID:74699663@freetobook.com
+DTSTAMP:20260417T182517Z
+SUMMARY:Apartment AYA:WTB19BCD37
+DTSTART;VALUE=DATE:20260507
+DTEND;VALUE=DATE:20260511
+END:VEVENT
+BEGIN:VEVENT
+UID:74699664@freetobook.com
+DTSTAMP:20260417T182517Z
+SUMMARY:Apartment RYO:WTB19BCD37
+DTSTART;VALUE=DATE:20260507
+DTEND;VALUE=DATE:20260511
+END:VEVENT
+BEGIN:VEVENT
+UID:74699665@freetobook.com
+DTSTAMP:20260417T182517Z
+SUMMARY:Apartment UMI:WTB19BCD37
+DTSTART;VALUE=DATE:20260507
+DTEND;VALUE=DATE:20260511
+END:VEVENT
+END:VCALENDAR
+"""
+
+
+def ical_events_from_response(response):
+    cal = ICal.from_ical(response.data)
+    return [component for component in cal.walk() if component.name == "VEVENT"]
+
+
 def test_keeps_started_booking_missing_from_source(monkeypatch, tmp_path):
     """If the source feed drops an in-progress booking, it should be restored from cache."""
     module = load_module()
@@ -268,7 +311,7 @@ def test_keeps_started_booking_missing_from_source(monkeypatch, tmp_path):
     cache_file.write_text(json.dumps(cache_payload))
 
     ics_text = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//test//EN\nEND:VCALENDAR"
-    monkeypatch.setattr(module.requests, "get", lambda url: DummyResponse(ics_text))
+    monkeypatch.setattr(module.requests, "get", lambda url, **kwargs: DummyResponse(ics_text))
 
     props = module.parse_and_group_events(now_override=now, cache_file=str(cache_file))
     room_events = props["Room ONE"]
@@ -284,7 +327,7 @@ def test_parses_sample_feed_and_groups_by_property(monkeypatch, tmp_path):
     now = tz.localize(datetime(2025, 12, 3, 12, 0, 0))
 
     cache_file = tmp_path / "cache.json"
-    monkeypatch.setattr(module.requests, "get", lambda url: DummyResponse(ICS_SAMPLE))
+    monkeypatch.setattr(module.requests, "get", lambda url, **kwargs: DummyResponse(ICS_SAMPLE))
 
     props = module.parse_and_group_events(now_override=now, cache_file=str(cache_file))
 
@@ -322,10 +365,132 @@ def test_generates_empty_calendars_for_known_properties(monkeypatch, tmp_path):
 
     cache_file = tmp_path / "cache.json"
     empty_feed = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//test//EN\nEND:VCALENDAR"
-    monkeypatch.setattr(module.requests, "get", lambda url: DummyResponse(empty_feed))
+    monkeypatch.setattr(module.requests, "get", lambda url, **kwargs: DummyResponse(empty_feed))
 
     props = module.parse_and_group_events(now_override=now, cache_file=str(cache_file))
 
     for key in module.KNOWN_PROPERTIES:
         assert key in props, f"{key} should always have a generated calendar"
         assert props[key] == [], f"{key} should be empty when the source feed has no reservations"
+
+
+def test_same_booking_code_across_units_is_not_deduped(monkeypatch, tmp_path):
+    module = load_module()
+    tz = pytz.timezone(module.TIMEZONE)
+    now = tz.localize(datetime(2026, 4, 17, 12, 0, 0))
+
+    cache_file = tmp_path / "cache.json"
+    monkeypatch.setattr(module.requests, "get", lambda url, **kwargs: DummyResponse(MULTI_UNIT_BOOKING_SAMPLE))
+
+    props = module.parse_and_group_events(now_override=now, cache_file=str(cache_file))
+
+    expected = {
+        "Apartment MAO - Five Bedroom": "74699666@freetobook.com",
+        "Apartment AYA": "74699663@freetobook.com",
+        "Apartment RYO": "74699664@freetobook.com",
+        "Apartment UMI": "74699665@freetobook.com",
+    }
+    for prop, uid in expected.items():
+        matching_events = [event for event in props[prop] if "WTB19BCD37" in event["summary"]]
+        assert len(matching_events) == 1, f"{prop} should keep its own WTB19BCD37 reservation"
+        assert matching_events[0]["uid"] == uid
+        assert matching_events[0]["start"].date().isoformat() == "2026-05-07"
+        assert matching_events[0]["end"].date().isoformat() == "2026-05-11"
+
+
+def test_routes_export_same_booking_code_with_unit_scoped_uids(monkeypatch, tmp_path):
+    module = load_module()
+    tz = pytz.timezone(module.TIMEZONE)
+    now = tz.localize(datetime(2026, 4, 17, 12, 0, 0))
+
+    cache_file = tmp_path / "cache.json"
+    monkeypatch.setattr(module.requests, "get", lambda url, **kwargs: DummyResponse(MULTI_UNIT_BOOKING_SAMPLE))
+    props = module.parse_and_group_events(now_override=now, cache_file=str(cache_file))
+    monkeypatch.setattr(module, "parse_and_group_events", lambda: props)
+
+    expected = {
+        "apartment-mao-five-bedroom": ("Apartment MAO - Five Bedroom (WTB19BCD37)", "74699666@freetobook.com", "MAO"),
+        "apartment-aya": ("Apartment AYA (WTB19BCD37)", "74699663@freetobook.com", "AYA"),
+        "apartment-ryo": ("Apartment RYO (WTB19BCD37)", "74699664@freetobook.com", "RYO"),
+        "apartment-umi": ("Apartment UMI (WTB19BCD37)", "74699665@freetobook.com", "UMI"),
+    }
+
+    with module.app.test_client() as client:
+        for slug, (summary, source_uid, unit_code) in expected.items():
+            response = client.get(f"/calendar/{slug}.ics")
+            assert response.status_code == 200
+
+            events = ical_events_from_response(response)
+            assert len(events) == 1
+            event = events[0]
+            assert str(event.get("SUMMARY")) == summary
+            assert str(event.get("UID")) == f"{source_uid.split('@', 1)[0]}+{unit_code}@staypr"
+            assert str(event.get("X-ORIGINAL-UID")) == source_uid
+            assert str(event.get("X-UNIT-CODE")) == unit_code
+            assert str(event.get("STATUS")) == "CONFIRMED"
+            assert str(event.get("TRANSP")) == "OPAQUE"
+            assert event.get("LAST-MODIFIED") is not None
+            assert int(event.get("SEQUENCE")) == 1
+
+
+def test_fetch_failure_uses_cache_without_overwriting_it(monkeypatch, tmp_path):
+    module = load_module()
+    tz = pytz.timezone(module.TIMEZONE)
+    now = tz.localize(datetime(2026, 1, 10, 12, 0, 0))
+
+    started_uid = "started-cache-uid"
+    future_uid = "future-cache-uid"
+    ended_uid = "ended-cache-uid"
+    cache_file = tmp_path / "cache.json"
+    cache_payload = {
+        "Room ONE": [
+            {
+                "uid": started_uid,
+                "summary": "Room ONE (STARTED)",
+                "start": tz.localize(datetime(2026, 1, 8, 16, 0, 0)).isoformat(),
+                "end": tz.localize(datetime(2026, 1, 13, 11, 0, 0)).isoformat(),
+                "description": "Started booking",
+                "dtstamp": datetime(2026, 1, 1, 0, 0, 0, tzinfo=pytz.utc).isoformat(),
+                "version": 2,
+                "last_seen": now.isoformat(),
+                "location": None,
+                "geo": None,
+            },
+            {
+                "uid": future_uid,
+                "summary": "Room ONE (FUTURE)",
+                "start": tz.localize(datetime(2026, 1, 12, 16, 0, 0)).isoformat(),
+                "end": tz.localize(datetime(2026, 1, 15, 11, 0, 0)).isoformat(),
+                "description": "Future booking",
+                "dtstamp": datetime(2026, 1, 2, 0, 0, 0, tzinfo=pytz.utc).isoformat(),
+                "version": 1,
+                "last_seen": now.isoformat(),
+                "location": None,
+                "geo": None,
+            },
+            {
+                "uid": ended_uid,
+                "summary": "Room ONE (ENDED)",
+                "start": tz.localize(datetime(2026, 1, 1, 16, 0, 0)).isoformat(),
+                "end": tz.localize(datetime(2026, 1, 3, 11, 0, 0)).isoformat(),
+                "description": "Ended booking",
+                "dtstamp": datetime(2026, 1, 1, 0, 0, 0, tzinfo=pytz.utc).isoformat(),
+                "version": 1,
+                "last_seen": now.isoformat(),
+                "location": None,
+                "geo": None,
+            },
+        ]
+    }
+    cache_file.write_text(json.dumps(cache_payload))
+    original_cache_text = cache_file.read_text()
+
+    monkeypatch.setattr(module.requests, "get", lambda url, **kwargs: DummyResponse("temporary failure", status_code=503))
+
+    props = module.parse_and_group_events(now_override=now, cache_file=str(cache_file))
+    uids = {event["uid"] for event in props["Room ONE"]}
+
+    assert started_uid in uids
+    assert future_uid in uids
+    assert ended_uid not in uids
+    assert cache_file.read_text() == original_cache_text

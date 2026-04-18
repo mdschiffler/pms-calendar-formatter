@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+active_reservations_cache.json
 
 # Environments
 .venv/

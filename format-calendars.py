@@ -10,6 +10,7 @@ import logging
 
 import json, os
 CACHE_FILE = "active_reservations_cache.json"
+FETCH_TIMEOUT_SECONDS = 20
 
 USERNAME = "user"
 PASSWORD = "password"
@@ -90,17 +91,72 @@ def save_cached_reservations(data, cache_file=CACHE_FILE):
     with open(cache_file, "w") as f:
         json.dump(data, f, indent=2, default=str)
 
-def parse_and_group_events(now_override=None, cache_file=CACHE_FILE):
-    logger.info("Fetching calendar feed from source...")
-    response = requests.get(SOURCE_ICAL_URL)
-    cal = ICal.from_ical(response.text)
+def ensure_known_property_keys(properties):
+    for key in KNOWN_PROPERTIES:
+        if key not in properties:
+            properties[key] = []
+    return properties
 
+def properties_from_cache(cache, now):
     properties = defaultdict(list)
     tz = pytz.timezone(TIMEZONE)
 
+    for prop_name, cached_events in cache.items():
+        if not isinstance(cached_events, list):
+            continue
+        if prop_name not in properties:
+            properties[prop_name] = []
+
+        for ev in cached_events:
+            try:
+                cached_start = datetime.fromisoformat(ev['start']).astimezone(tz)
+                cached_end = datetime.fromisoformat(ev['end']).astimezone(tz)
+            except Exception:
+                continue
+
+            if cached_end <= now:
+                continue
+
+            properties[prop_name].append({
+                'uid': ev.get('uid'),
+                'summary': ev.get('summary'),
+                'description': ev.get('description'),
+                'start': cached_start,
+                'end': cached_end,
+                'location': ev.get('location'),
+                'geo': ev.get('geo'),
+                'dtstamp': ev.get('dtstamp'),
+                'version': ev.get('version', 1),
+                'last_seen': ev.get('last_seen') or now.isoformat(),
+            })
+
+    return ensure_known_property_keys(properties)
+
+def fetch_source_calendar():
+    response = requests.get(SOURCE_ICAL_URL, timeout=FETCH_TIMEOUT_SECONDS)
+    status_code = getattr(response, "status_code", 200)
+    if status_code and int(status_code) >= 400:
+        raise ValueError(f"Source feed returned HTTP {status_code}")
+
+    feed_text = getattr(response, "text", "")
+    if not feed_text or "BEGIN:VCALENDAR" not in feed_text:
+        raise ValueError("Source feed response does not look like iCal data")
+
+    return ICal.from_ical(feed_text)
+
+def parse_and_group_events(now_override=None, cache_file=CACHE_FILE):
+    properties = defaultdict(list)
+    tz = pytz.timezone(TIMEZONE)
     cache = load_cached_reservations(cache_file)
     now = now_override.astimezone(tz) if now_override else datetime.now(tz)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    logger.info("Fetching calendar feed from source...")
+    try:
+        cal = fetch_source_calendar()
+    except Exception as exc:
+        logger.error("Unable to fetch/parse source calendar; using cached reservations without rewriting cache: %s", exc)
+        return properties_from_cache(cache, now)
 
     seen_uids_by_prop = defaultdict(set)
     source_events_by_uid = {}
@@ -281,10 +337,7 @@ def parse_and_group_events(now_override=None, cache_file=CACHE_FILE):
         f"(restored_started={restored_active_after_start}, cancelled_future={cancelled_future_missing})"
     )
 
-    # Ensure all known property keys are present, even if empty
-    for key in KNOWN_PROPERTIES:
-        if key not in properties:
-            properties[key] = []
+    ensure_known_property_keys(properties)
 
     # Save current active events to cache
     cache_to_save = {}
@@ -361,8 +414,16 @@ def export_property_calendar(property_name):
         except Exception:
             pass
 
-        # Always use the newer of stored dtstamp vs now (not the older one)
-        e.add('dtstamp', ev_dtstamp if ev_dtstamp else datetime.now(pytz.utc))
+        event_dtstamp = ev_dtstamp if ev_dtstamp else datetime.now(pytz.utc)
+        e.add('dtstamp', event_dtstamp)
+        e.add('last-modified', event_dtstamp)
+        e.add('status', 'CONFIRMED')
+        e.add('transp', 'OPAQUE')
+        try:
+            sequence = int(ev.get('version', 1))
+        except (TypeError, ValueError):
+            sequence = 1
+        e.add('sequence', max(sequence, 0))
         e.add('summary', ev['summary'])
         e.add('description', ev['description'])
 
