@@ -14,6 +14,28 @@ FETCH_TIMEOUT_SECONDS = 20
 SOURCE_ICAL_URL = 'https://www.freetobook.com/ical/property-feed/5eac437529a87f16b68149bb183f19ef.ics'
 TIMEZONE = 'America/Puerto_Rico'
 
+FAVICON_SVG = """<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
+  <rect width="16" height="16" fill="#000000"/>
+  <rect x="4" y="0" width="2" height="2" fill="#00FF00"/>
+  <rect x="10" y="0" width="2" height="2" fill="#00FF00"/>
+  <rect x="2" y="2" width="12" height="12" fill="#00FF00"/>
+  <rect x="3" y="6" width="10" height="7" fill="#000000"/>
+  <rect x="4" y="7" width="1" height="1" fill="#00FF00"/>
+  <rect x="6" y="7" width="1" height="1" fill="#00FF00"/>
+  <rect x="8" y="7" width="1" height="1" fill="#00FF00"/>
+  <rect x="10" y="7" width="1" height="1" fill="#00FF00"/>
+  <rect x="4" y="9" width="1" height="1" fill="#00FF00"/>
+  <rect x="6" y="9" width="1" height="1" fill="#00FF00"/>
+  <rect x="8" y="9" width="1" height="1" fill="#00FF00"/>
+  <rect x="10" y="9" width="1" height="1" fill="#00FF00"/>
+  <rect x="4" y="11" width="1" height="1" fill="#00FF00"/>
+  <rect x="6" y="11" width="1" height="1" fill="#00FF00"/>
+  <rect x="8" y="11" width="1" height="1" fill="#00FF00"/>
+  <rect x="10" y="11" width="1" height="1" fill="#00FF00"/>
+</svg>
+"""
+
 # Ensure calendars are always available for these units, even when no reservations exist.
 KNOWN_PROPERTIES = [
     "Room ONE",
@@ -540,6 +562,8 @@ def list_properties():
 <!DOCTYPE html>
 <html>
 <head>
+    <title>PMS Calendar Formatter</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <style>
         body {{
             background-color: black;
@@ -650,6 +674,12 @@ def list_properties():
 </html>
 """
     return Response(html, mimetype='text/html')
+
+
+@app.route("/favicon.svg")
+@app.route("/favicon.ico")
+def favicon():
+    return Response(FAVICON_SVG, mimetype="image/svg+xml")
 
 
 # --- Manual cache clear route ---
