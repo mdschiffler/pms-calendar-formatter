@@ -5,15 +5,11 @@ from datetime import datetime, time, timedelta
 from collections import defaultdict
 import pytz
 import re
-import arrow
 import logging
 
 import json, os
 CACHE_FILE = "active_reservations_cache.json"
 FETCH_TIMEOUT_SECONDS = 20
-
-USERNAME = "user"
-PASSWORD = "password"
 
 SOURCE_ICAL_URL = 'https://www.freetobook.com/ical/property-feed/5eac437529a87f16b68149bb183f19ef.ics'
 TIMEZONE = 'America/Puerto_Rico'
